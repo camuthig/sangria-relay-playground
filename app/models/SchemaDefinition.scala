@@ -3,6 +3,9 @@ package models
 import sangria.schema._
 import sangria.relay._
 import models.StarWarsData._
+import play.api.libs.json._
+import sangria.macros.derive._
+import sangria.marshalling.playJson._
 
 
 /**
@@ -110,7 +113,7 @@ object SchemaDefinition {
     * name: String
     * }
     */
-  val ShipType: ObjectType[Unit, Ship] = ObjectType(
+  implicit val ShipType: ObjectType[Unit, Ship] = ObjectType(
     "Ship",
     "A ship in the Star Wars saga",
     interfaces[Unit, Ship](nodeInterface),
@@ -146,7 +149,7 @@ object SchemaDefinition {
     * ships: ShipConnection
     * }
     */
-  val FactionType: ObjectType[FactionRepo, Faction] = ObjectType(
+  implicit val FactionType: ObjectType[FactionRepo, Faction] = ObjectType(
     "Faction",
     "A faction in the Star Wars saga",
     interfaces[FactionRepo, Faction](nodeInterface),
@@ -205,18 +208,18 @@ object SchemaDefinition {
     typeName = "IntroduceShip",
     inputFields = List(
       InputField("shipName", StringType),
-      InputField("factionId", IDType)),
+      InputField("factionId", GlobalId.GlobalIdTypeAlias)),
     outputFields = fields(
       Field("ship", OptionType(ShipType), resolve = ctx ⇒ ctx.ctx.getShip(ctx.value.shipId)),
       Field("faction", OptionType(FactionType), resolve = ctx ⇒ ctx.ctx.getFaction(ctx.value.factionId))),
     mutateAndGetPayload = (input, ctx) ⇒ {
       val mutationId = input.get(Mutation.ClientMutationIdFieldName).asInstanceOf[Option[Option[String]]].flatten
       val shipName = input("shipName").asInstanceOf[String]
-      val factionId = input("factionId").asInstanceOf[String]
+      val factionId = input("factionId").asInstanceOf[GlobalId]
 
-      val newShip = ctx.ctx.createShip(shipName, factionId)
+      val newShip = ctx.ctx.createShip(shipName, factionId.id)
 
-      ShipMutationPayload(mutationId, newShip.id, factionId)
+      ShipMutationPayload(mutationId, newShip.id, factionId.id)
     }
   )
 
@@ -231,5 +234,52 @@ object SchemaDefinition {
     */
   val MutationType = ObjectType("Mutation", fields[FactionRepo, Unit](shipMutation))
 
-  val schema = Schema(QueryType, Some(MutationType))
+  /*
+   * Create a necessary structures for a derived mutation
+   */
+  implicit val globalIdFormat = new Format[GlobalId] {
+    override def writes(g: GlobalId): JsValue = JsString(g.asString)
+
+    override def reads(json: JsValue): JsResult[GlobalId] = Option(json)
+      .flatMap {
+        case JsString(value) => Some(value)
+        case _ => None
+      }
+      .flatMap {
+        GlobalId.unapply
+      }
+      .map(JsSuccess(_, __))
+      .getOrElse(JsError(__, "Invalid global ID"))
+  }
+
+  case class IntroduceShipInput(clientMutationId: Option[String], shipName: String, factionId: GlobalId)
+
+  object IntroduceShipInput {
+    implicit val formatIntroduceShipInput = Json.format[IntroduceShipInput]
+  }
+
+  case class IntroduceShipPayload(clientMutationId: Option[String], ship: Ship, faction: Option[Faction]) extends sangria.relay.Mutation
+
+  //  val DerivedMutationType = deriveContextObjectType[Ctx, Mutation, Unit](identity)
+  val shipMutations = fields[FactionRepo, Unit](
+    Field(
+      "introduceShip",
+      deriveObjectType[FactionRepo, IntroduceShipPayload](),
+      arguments = List(Argument("input", deriveInputObjectType[IntroduceShipInput]())),
+      resolve = ctx => {
+        val input   = ctx.arg("input").asInstanceOf[IntroduceShipInput]
+        val newShip = ctx.ctx.createShip(input.shipName, input.factionId.id)
+
+        IntroduceShipPayload(input.clientMutationId, newShip, ctx.ctx.getFaction(input.factionId.id))
+      }
+    )
+  )
+
+  val DerivedMutationType = ObjectType("Mutation", shipMutations)
+
+  // This works
+  //val schema = Schema(QueryType, Some(MutationType))
+
+  // This doesn't work
+  val schema = Schema(QueryType, Some(DerivedMutationType))
 }

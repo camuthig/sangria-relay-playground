@@ -7,7 +7,7 @@ scalaVersion := "2.11.8"
 
 libraryDependencies ++= Seq(
   filters,
-  "org.sangria-graphql" %% "sangria-relay" % "1.0.0",
+  "org.sangria-graphql" %% "sangria-relay" % "1.2.0-SNAPSHOT",
   "org.sangria-graphql" %% "sangria-play-json" % "1.0.0"
 )
 
